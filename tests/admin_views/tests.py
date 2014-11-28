@@ -612,26 +612,26 @@ class AdminViewBasicTest(AdminViewBasicTestCase):
             self.assertEqual(response.status_code, 400)
             self.assertEqual(len(calls), 1)
 
-        # Specifying a field referenced by another model should be allowed.
-        response = self.client.get("/test_admin/admin/admin_views/section/", {TO_FIELD_VAR: 'id'})
+        # #23839 - Primary key should always be allowed, even if the referenced model isn't registered.
+        response = self.client.get("/test_admin/admin/admin_views/notreferenced/", {TO_FIELD_VAR: 'id'})
         self.assertEqual(response.status_code, 200)
 
-        # Specifying a field referenced by another model though a m2m should be allowed.
-        response = self.client.get("/test_admin/admin/admin_views/m2mreference/", {TO_FIELD_VAR: 'id'})
+        # #23915 - Specifying a field referenced by another model though a m2m should be allowed.
+        response = self.client.get("/test_admin/admin/admin_views/recipe/", {TO_FIELD_VAR: 'rname'})
         self.assertEqual(response.status_code, 200)
 
-        # #23604 - Specifying the pk of this model should be allowed when this model defines a m2m relationship
-        response = self.client.get("/test_admin/admin/admin_views/ingredient/", {TO_FIELD_VAR: 'id'})
+        # #23604, #23915 - Specifying a field referenced through a reverse m2m relationship should be allowed.
+        response = self.client.get("/test_admin/admin/admin_views/ingredient/", {TO_FIELD_VAR: 'iname'})
         self.assertEqual(response.status_code, 200)
 
         # #23329 - Specifying a field that is not referred by any other model directly registered
         # to this admin site but registered through inheritance should be allowed.
-        response = self.client.get("/test_admin/admin/admin_views/referencedbyparent/", {TO_FIELD_VAR: 'id'})
+        response = self.client.get("/test_admin/admin/admin_views/referencedbyparent/", {TO_FIELD_VAR: 'name'})
         self.assertEqual(response.status_code, 200)
 
         # #23431 - Specifying a field that is only referred to by a inline of a registered
         # model should be allowed.
-        response = self.client.get("/test_admin/admin/admin_views/referencedbyinline/", {TO_FIELD_VAR: 'id'})
+        response = self.client.get("/test_admin/admin/admin_views/referencedbyinline/", {TO_FIELD_VAR: 'name'})
         self.assertEqual(response.status_code, 200)
 
         # We also want to prevent the add and change view from leaking a
@@ -838,6 +838,7 @@ class AdminCustomTemplateTests(AdminViewBasicTestCase):
             '_selected_action': group.id
         }
         response = self.client.post('/test_admin/%s/auth/group/' % (self.urlbit), post_data)
+        self.assertEqual(response.context['site_header'], 'Django administration')
         self.assertContains(response, 'bodyclass_consistency_check ')
 
     def test_filter_with_custom_template(self):
@@ -4204,6 +4205,10 @@ class GroupAdminTest(TestCase):
 
     def test_group_permission_performance(self):
         g = Group.objects.create(name="test_group")
+
+        # Ensure no queries are skipped due to cached content type for Group.
+        ContentType.objects.clear_cache()
+
         with self.assertNumQueries(8):
             response = self.client.get('/test_admin/admin/auth/group/%s/' % g.pk)
             self.assertEqual(response.status_code, 200)

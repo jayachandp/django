@@ -7,7 +7,6 @@ from inspect import getargspec, getcallargs
 import warnings
 
 from django.apps import apps
-from django.conf import settings
 from django.template.context import (BaseContext, Context, RequestContext,  # NOQA: imported for backwards compatibility
     ContextPopException)
 from django.utils import lru_cache
@@ -71,10 +70,6 @@ libraries = {}
 # global list of libraries to load by default for a new parser
 builtins = []
 
-# True if TEMPLATE_STRING_IF_INVALID contains a format string (%s). None means
-# uninitialized.
-invalid_var_format_string = None
-
 
 class TemplateSyntaxError(Exception):
     pass
@@ -124,17 +119,21 @@ class StringOrigin(Origin):
 
 
 class Template(object):
-    def __init__(self, template_string, origin=None, name=None):
+    def __init__(self, template_string, origin=None, name=None, engine=None):
         try:
             template_string = force_text(template_string)
         except UnicodeDecodeError:
             raise TemplateEncodingError("Templates can only be constructed "
                                         "from unicode or UTF-8 strings.")
-        if settings.TEMPLATE_DEBUG and origin is None:
+        if engine is None:
+            from .engine import Engine
+            engine = Engine.get_default()
+        if engine.debug and origin is None:
             origin = StringOrigin(template_string)
-        self.nodelist = compile_string(template_string, origin)
+        self.nodelist = engine.compile_string(template_string, origin)
         self.name = name
         self.origin = origin
+        self.engine = engine
 
     def __iter__(self):
         for node in self.nodelist:
@@ -146,23 +145,19 @@ class Template(object):
 
     def render(self, context):
         "Display stage -- can be called many times"
+        # Set engine attribute here to avoid changing the signature of either
+        # Context.__init__ or Node.render. The engine is set only on the first
+        # call to render. Further calls e.g. for includes don't override it.
+        toplevel_render = context.engine is None
+        if toplevel_render:
+            context.engine = self.engine
         context.render_context.push()
         try:
             return self._render(context)
         finally:
             context.render_context.pop()
-
-
-def compile_string(template_string, origin):
-    "Compiles template_string into NodeList ready for rendering"
-    if settings.TEMPLATE_DEBUG:
-        from django.template.debug import DebugLexer, DebugParser
-        lexer_class, parser_class = DebugLexer, DebugParser
-    else:
-        lexer_class, parser_class = Lexer, Parser
-    lexer = lexer_class(template_string, origin)
-    parser = parser_class(lexer.tokenize())
-    return parser.parse()
+            if toplevel_render:
+                context.engine = None
 
 
 class Token(object):
@@ -601,15 +596,14 @@ class FilterExpression(object):
                 if ignore_failures:
                     obj = None
                 else:
-                    if settings.TEMPLATE_STRING_IF_INVALID:
-                        global invalid_var_format_string
-                        if invalid_var_format_string is None:
-                            invalid_var_format_string = '%s' in settings.TEMPLATE_STRING_IF_INVALID
-                        if invalid_var_format_string:
-                            return settings.TEMPLATE_STRING_IF_INVALID % self.var
-                        return settings.TEMPLATE_STRING_IF_INVALID
+                    string_if_invalid = context.engine.string_if_invalid
+                    if string_if_invalid:
+                        if '%s' in string_if_invalid:
+                            return string_if_invalid % self.var
+                        else:
+                            return string_if_invalid
                     else:
-                        obj = settings.TEMPLATE_STRING_IF_INVALID
+                        obj = string_if_invalid
         else:
             obj = self.var
         for func, args in self.filters:
@@ -794,7 +788,7 @@ class Variable(object):
                     if getattr(current, 'do_not_call_in_templates', False):
                         pass
                     elif getattr(current, 'alters_data', False):
-                        current = settings.TEMPLATE_STRING_IF_INVALID
+                        current = context.engine.string_if_invalid
                     else:
                         try:  # method call (assuming no args required)
                             current = current()
@@ -802,12 +796,12 @@ class Variable(object):
                             try:
                                 getcallargs(current)
                             except TypeError:  # arguments *were* required
-                                current = settings.TEMPLATE_STRING_IF_INVALID  # invalid method call
+                                current = context.engine.string_if_invalid  # invalid method call
                             else:
                                 raise
         except Exception as e:
             if getattr(e, 'silent_variable_failure', False):
-                current = settings.TEMPLATE_STRING_IF_INVALID
+                current = context.engine.string_if_invalid
             else:
                 raise
 
@@ -1232,6 +1226,7 @@ class Library(object):
                         'current_app': context.current_app,
                         'use_l10n': context.use_l10n,
                         'use_tz': context.use_tz,
+                        'engine': context.engine,
                     })
                     # Copy across the CSRF token, if present, because
                     # inclusion tags are often used for forms, and we need

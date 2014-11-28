@@ -12,10 +12,9 @@ from django import template
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.core import urlresolvers
-from django.template import (base as template_base, loader, Context,
-    RequestContext, Template, TemplateSyntaxError)
+from django.template import loader, Context, RequestContext, Template, TemplateSyntaxError
+from django.template.engine import Engine
 from django.template.loaders import app_directories, filesystem
-from django.template.loaders.utils import get_template_loaders
 from django.test import RequestFactory, TestCase
 from django.test.utils import override_settings, extend_sys_path
 from django.utils.deprecation import RemovedInDjango19Warning, RemovedInDjango20Warning
@@ -160,8 +159,8 @@ class UTF8Class:
 class TemplateLoaderTests(TestCase):
 
     def test_loaders_security(self):
-        ad_loader = app_directories.Loader()
-        fs_loader = filesystem.Loader()
+        ad_loader = app_directories.Loader(Engine.get_default())
+        fs_loader = filesystem.Loader(Engine.get_default())
 
         def test_template_sources(path, template_dirs, expected_sources):
             if isinstance(expected_sources, list):
@@ -550,14 +549,15 @@ class TemplateTests(TestCase):
             failures = []
             tests = sorted(template_tests.items())
 
-            # Set TEMPLATE_STRING_IF_INVALID to a known string.
-            expected_invalid_str = 'INVALID'
-
             # Warm the URL reversing cache. This ensures we don't pay the cost
             # warming the cache during one of the tests.
             urlresolvers.reverse('named.client', args=(0,))
 
             for name, vals in tests:
+
+                # Set TEMPLATE_STRING_IF_INVALID to a known string.
+                expected_invalid_str = 'INVALID'
+
                 if isinstance(vals[2], tuple):
                     normal_string_result = vals[2][0]
                     invalid_string_result = vals[2][1]
@@ -565,7 +565,6 @@ class TemplateTests(TestCase):
                     if isinstance(invalid_string_result, tuple):
                         expected_invalid_str = 'INVALID %s'
                         invalid_string_result = invalid_string_result[0] % invalid_string_result[1]
-                        template_base.invalid_var_format_string = True
 
                     try:
                         template_debug_result = vals[2][2]
@@ -605,6 +604,13 @@ class TemplateTests(TestCase):
                                             # Ignore deprecations of old style unordered_list
                                             # and removetags.
                                             warnings.filterwarnings("ignore", category=RemovedInDjango20Warning, module="django.template.defaultfilters")
+                                            # Ignore numpy deprecation warnings (#23890)
+                                            warnings.filterwarnings(
+                                                "ignore",
+                                                "Using a non-integer number instead of an "
+                                                "integer will result in an error in the future",
+                                                DeprecationWarning
+                                            )
                                             output = self.render(test_template, vals)
                                     except ShouldNotExecuteException:
                                         failures.append("Template test (Cached='%s', TEMPLATE_STRING_IF_INVALID='%s', TEMPLATE_DEBUG=%s): %s -- FAILED. Template rendering invoked method that shouldn't have been invoked." % (is_cached, invalid_str, template_debug, name))
@@ -620,13 +626,7 @@ class TemplateTests(TestCase):
                                 if output != result:
                                     failures.append("Template test (Cached='%s', TEMPLATE_STRING_IF_INVALID='%s', TEMPLATE_DEBUG=%s): %s -- FAILED. Expected %r, got %r" % (is_cached, invalid_str, template_debug, name, result, output))
 
-                    # This relies on get_template_loaders() memoizing its
-                    # result. All callers get the same iterable of loaders.
-                    get_template_loaders()[0].reset()
-
-                if template_base.invalid_var_format_string:
-                    expected_invalid_str = 'INVALID'
-                    template_base.invalid_var_format_string = False
+                    Engine.get_default().template_loaders[0].reset()
 
         self.assertEqual(failures, [], "Tests failed:\n%s\n%s" %
             ('-' * 70, ("\n%s\n" % ('-' * 70)).join(failures)))
@@ -1696,6 +1696,8 @@ class TemplateTests(TestCase):
             'now05': ('''{% now 'j "n" Y'%}''', {}, '''%d "%d" %d''' % (
                 datetime.now().day, datetime.now().month, datetime.now().year)),
             'now06': ('''{% now "j 'n' Y"%}''', {}, '''%d '%d' %d''' % (
+                datetime.now().day, datetime.now().month, datetime.now().year)),
+            'now07': ('''{% now "j n Y" as N %}-{{N}}-''', {}, '''-%d %d %d-''' % (
                 datetime.now().day, datetime.now().month, datetime.now().year)),
 
             ### URL TAG ########################################################

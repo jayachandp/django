@@ -12,7 +12,7 @@ from django.http import (HttpResponse, HttpResponseNotFound, HttpRequest,
     build_request_repr)
 from django.template import Template, Context, TemplateDoesNotExist
 from django.template.defaultfilters import force_escape, pprint
-from django.template.loaders.utils import get_template_loaders
+from django.template.engine import Engine
 from django.utils.datastructures import MultiValueDict
 from django.utils.html import escape
 from django.utils.encoding import force_bytes, smart_text
@@ -276,13 +276,16 @@ class ExceptionReporter(object):
     def get_traceback_data(self):
         """Return a dictionary containing traceback information."""
 
+        # TODO: handle multiple template engines.
+        template_engine = Engine.get_default()
+
         if self.exc_type and issubclass(self.exc_type, TemplateDoesNotExist):
             self.template_does_not_exist = True
             self.loader_debug_info = []
             # If Django fails in get_template_loaders, provide an empty list
             # for the following loop to not fail.
             try:
-                template_loaders = get_template_loaders()
+                template_loaders = template_engine.template_loaders
             except Exception:
                 template_loaders = []
             for loader in template_loaders:
@@ -301,7 +304,7 @@ class ExceptionReporter(object):
                     'loader': loader_name,
                     'templates': template_list,
                 })
-        if (settings.TEMPLATE_DEBUG and
+        if (template_engine.debug and
                 hasattr(self.exc_value, 'django_template_source')):
             self.get_template_exception_info()
 

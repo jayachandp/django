@@ -70,9 +70,9 @@ def add_lazy_relation(cls, field, relation, operation):
             model_name = relation._meta.object_name
 
     # Try to look up the related model, and if it's already loaded resolve the
-    # string right away. If get_model returns None, it means that the related
-    # model isn't loaded yet, so we need to pend the relation until the class
-    # is prepared.
+    # string right away. If get_registered_model raises a LookupError, it means
+    # that the related model isn't loaded yet, so we need to pend the relation
+    # until the class is prepared.
     try:
         model = cls._meta.apps.get_registered_model(app_label, model_name)
     except LookupError:
@@ -1348,11 +1348,18 @@ class ManyToManyRel(object):
 
     def get_related_field(self):
         """
-        Returns the field in the to' object to which this relationship is tied
-        (this is always the primary key on the target model). Provided for
-        symmetry with ManyToOneRel.
+        Returns the field in the 'to' object to which this relationship is tied.
+        Provided for symmetry with ManyToOneRel.
         """
-        return self.to._meta.pk
+        opts = self.through._meta
+        if self.through_fields:
+            field = opts.get_field(self.through_fields[0])
+        else:
+            for field in opts.fields:
+                rel = getattr(field, 'rel', None)
+                if rel and rel.to == self.to:
+                    break
+        return field.foreign_related_fields[0]
 
 
 class ForeignObject(RelatedField):
@@ -1703,6 +1710,7 @@ class ForeignKey(ForeignObject):
     def check(self, **kwargs):
         errors = super(ForeignKey, self).check(**kwargs)
         errors.extend(self._check_on_delete())
+        errors.extend(self._check_unique())
         return errors
 
     def _check_on_delete(self):
@@ -1727,6 +1735,16 @@ class ForeignKey(ForeignObject):
             ]
         else:
             return []
+
+    def _check_unique(self, **kwargs):
+        return [
+            checks.Warning(
+                'Setting unique=True on a ForeignKey has the same effect as using a OneToOneField.',
+                hint='ForeignKey(unique=True) is usually better served by a OneToOneField.',
+                obj=self,
+                id='fields.W342',
+            )
+        ] if self.unique else []
 
     def deconstruct(self):
         name, path, args, kwargs = super(ForeignKey, self).deconstruct()
@@ -1883,6 +1901,10 @@ class OneToOneField(ForeignKey):
             setattr(instance, self.name, data)
         else:
             setattr(instance, self.attname, data)
+
+    def _check_unique(self, **kwargs):
+        # override ForeignKey since check isn't applicable here
+        return []
 
 
 def create_many_to_many_intermediary_model(field, klass):

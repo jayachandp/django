@@ -454,10 +454,16 @@ class BaseModelAdmin(six.with_metaclass(forms.MediaDefiningClass)):
         except FieldDoesNotExist:
             return False
 
-        # Check whether this model is the origin of a M2M relationship
-        # in which case to_field has to be the pk on this model.
-        if opts.many_to_many and field.primary_key:
+        # Always allow referencing the primary key since it's already possible
+        # to get this information from the change view URL.
+        if field.primary_key:
             return True
+
+        # Allow reverse relationships to models defining m2m fields if they
+        # target the specified field.
+        for many_to_many in opts.many_to_many:
+            if many_to_many.m2m_target_field_name() == to_field:
+                return True
 
         # Make sure at least one of the models registered for this site
         # references this field through a FK or a M2M relationship.

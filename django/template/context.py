@@ -1,8 +1,5 @@
 from copy import copy
 
-from django.conf import settings
-from django.utils import lru_cache
-from django.utils.module_loading import import_string
 
 # Hard-coded processor for easier use of CSRF protection.
 _builtin_context_processors = ('django.core.context_processors.csrf',)
@@ -121,11 +118,12 @@ class BaseContext(object):
 class Context(BaseContext):
     "A stack container for variable context"
     def __init__(self, dict_=None, autoescape=True, current_app=None,
-            use_l10n=None, use_tz=None):
+            use_l10n=None, use_tz=None, engine=None):
         self.autoescape = autoescape
         self.current_app = current_app
         self.use_l10n = use_l10n
         self.use_tz = use_tz
+        self.engine = engine
         self.render_context = RenderContext()
         super(Context, self).__init__(dict_)
 
@@ -171,13 +169,6 @@ class RenderContext(BaseContext):
         return self.dicts[-1][key]
 
 
-@lru_cache.lru_cache()
-def get_standard_processors():
-    context_processors = _builtin_context_processors
-    context_processors += tuple(settings.TEMPLATE_CONTEXT_PROCESSORS)
-    return tuple(import_string(path) for path in context_processors)
-
-
 class RequestContext(Context):
     """
     This subclass of template.Context automatically populates itself using
@@ -186,14 +177,36 @@ class RequestContext(Context):
     using the "processors" keyword argument.
     """
     def __init__(self, request, dict_=None, processors=None, current_app=None,
-            use_l10n=None, use_tz=None):
+            use_l10n=None, use_tz=None, engine=None):
         Context.__init__(self, dict_, current_app=current_app,
-                use_l10n=use_l10n, use_tz=use_tz)
-        if processors is None:
-            processors = ()
-        else:
-            processors = tuple(processors)
-        updates = dict()
-        for processor in get_standard_processors() + processors:
-            updates.update(processor(request))
-        self.update(updates)
+                use_l10n=use_l10n, use_tz=use_tz, engine=engine)
+        self._request = request
+        self._processors = () if processors is None else tuple(processors)
+        self._processors_index = len(self.dicts)
+        self.update({})         # placeholder for context processors output
+        self.engine = engine    # re-run the setter in case engine is not None
+
+    @property
+    def engine(self):
+        return self._engine
+
+    @engine.setter
+    def engine(self, engine):
+        self._engine = engine
+        if hasattr(self, '_processors_index'):
+            if engine is None:
+                # Unset context processors.
+                self.dicts[self._processors_index] = {}
+            else:
+                # Set context processors for this engine.
+                updates = {}
+                for processor in engine.template_context_processors + self._processors:
+                    updates.update(processor(self._request))
+                self.dicts[self._processors_index] = updates
+
+    def new(self, values=None):
+        new_context = super(RequestContext, self).new(values)
+        # This is for backwards-compatibility: RequestContexts created via
+        # Context.new don't include values from context processors.
+        del new_context._processors_index
+        return new_context
